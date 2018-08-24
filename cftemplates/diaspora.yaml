@@ -1,0 +1,446 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Aeraria Diaspora
+Conditions:
+  NVMEInstance:
+    !Or
+    - !Equals [!Ref InstanceType, "m5.large"]
+    - !Equals [!Ref InstanceType, "m5.xlarge"]
+    - !Equals [!Ref InstanceType, "m5.2xlarge"]
+    - !Equals [!Ref InstanceType, "m5.4xlarge"]
+    - !Equals [!Ref InstanceType, "c5.large"]
+    - !Equals [!Ref InstanceType, "c5.xlarge"]
+    - !Equals [!Ref InstanceType, "c5.2xlarge"]
+    - !Equals [!Ref InstanceType, "c5.4xlarge"]
+Mappings:
+  AMIMap:
+    us-west-2:
+      ami: ami-51537029
+      date: 2018-08-15T12:39:01.000Z
+      desc: Canonical, Ubuntu, 16.04 LTS, amd64 xenial image build on 2018-08-14
+    us-west-1:
+      ami: ami-059e7901352ebaef8
+      date: 2018-08-15T12:38:35.000Z
+      desc: Canonical, Ubuntu, 16.04 LTS, amd64 xenial image build on 2018-08-14
+    us-east-2:
+      ami: ami-0552e3455b9bc8d50
+      date: 2018-08-15T12:39:03.000Z
+      desc: Canonical, Ubuntu, 16.04 LTS, amd64 xenial image build on 2018-08-14
+    us-east-1:
+      ami: ami-04169656fea786776
+      date: 2018-08-15T12:38:33.000Z
+      desc: Canonical, Ubuntu, 16.04 LTS, amd64 xenial image build on 2018-08-14
+    eu-west-1:
+      ami: ami-0181f8d9b6f098ec4
+      date: 2018-08-15T12:39:07.000Z
+      desc: Canonical, Ubuntu, 16.04 LTS, amd64 xenial image build on 2018-08-14
+  DeviceVolumeMap:
+    xvd:
+      a: xvda
+      b: xvdb
+      c: xvdc
+      d: xvdd
+      e: xvde
+      f: xvdf
+      g: xvdg
+      h: xvdh
+      i: xvdi
+      j: xvdj
+      k: xvdk
+      l: xvdl
+      m: xvdm
+      n: xvdn
+      o: xvdo
+      p: xvdp
+      q: xvdq
+      r: xvdr
+      s: xvds
+      t: xvdt
+      u: xvdu
+      v: xvdv
+      w: xvdw
+      x: xvdx
+      y: xvdy
+      z: xvdz
+    nvme:
+      '0': nvme0n1
+      '1': nvme1n1
+      '2': nvme2n1
+      '3': nvme3n1
+      '4': nvme4n1
+      '5': nvme5n1
+Parameters:
+  Environment:
+    AllowedValues:
+    - aeraria
+    Default: aeraria
+    Description: Environment Name
+    Type: String
+  InstanceType:
+    Default: t2.small
+    Description: Instance Type
+    Type: String
+  Name:
+    Default: diaspora
+    Description: Instance name
+    Type: String
+  Size:
+    Default: 1
+    Description: Number of desired instances
+    Type: Number
+  Stack:
+    AllowedValues:
+    - diaspora
+    Default: diaspora
+    Description: Stack type
+    Type: String
+Resources:
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: !Sub /${Environment}/${Name}/
+      Roles:
+      - !Ref Role
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [ec2.amazonaws.com]
+      Path: !Sub /${Environment}/
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action: ['s3:Get*','s3:List*','s3:Put*']
+            Effect: Allow
+            Resource: 
+            - !Sub arn:aws:s3:::aeraria-${AWS::Region}/*
+            - !Sub arn:aws:s3:::aeraria-${AWS::Region}
+        PolicyName: s3_rw
+      - PolicyDocument:
+          Statement:
+          - Action: ['cloudformation:Describe*']
+            Effect: Allow
+            Resource: '*'
+        PolicyName: cf_describe
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - 'ec2:Describe*'
+            - 'ec2:AssociateAddress'
+            - 'elasticloadbalancing:Describe*'
+            - 'autoscaling:Describe*'
+            - 'cloudwatch:ListMetrics'
+            - 'cloudwatch:GetMetricStatistics'
+            - 'cloudwatch:Describe*'
+            Effect: Allow
+            Resource: '*'
+        PolicyName: ec2_describe_associate_address
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - 'ec2:DescribeVolume*'
+            - 'ec2:AttachVolume*'
+            - 'ec2:DetachVolume*'
+            Effect: Allow
+            Resource: '*'
+        PolicyName: ec2_volume
+      - PolicyDocument:
+          Statement:
+          - Action: ['route53:*']
+            Effect: Allow
+            Resource: '*'
+        PolicyName: route53_allow_all
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          pre:
+          - config-cfn-hup
+          init:
+          - base
+          - initialize
+          post:
+          - finalize
+          default:
+          - ConfigSet: pre
+          - ConfigSet: init
+          - ConfigSet: post
+        config-cfn-hup:
+          files:
+            #cfn-hup configuration 
+            '/etc/cfn/cfn-hup.conf':
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=1
+            '/etc/cfn/hooks.d/cfn-auto-reloader.conf':
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.LaunchConfiguration.Metadata.AWS::CloudFormation::Init
+                action=/usr/local/bin/cfn-init -v --stack ${AWS::StackId} --resource LaunchConfiguration --region ${AWS::Region}
+            #systemd service 
+            '/etc/systemd/system/cfn-hup.service': 
+              content: |
+                [Unit]
+                Description=Cloud formation helper daemon
+
+                [Service]
+                ExecStart=/usr/local/bin/cfn-hup
+                Restart=always
+                RestartSec=10s
+                Type=notify
+                NotifyAccess=all
+                TimeoutStartSec=120
+                TimeoutStopSec=15
+
+                [Install]
+                WantedBy=multi-user.target
+          commands: 
+            enable-cfn-hup:
+              command: "systemctl enable cfn-hup.service" 
+              cwd: "/tmp"
+        base:
+          packages:
+            apt:
+              bc: []
+              chrony: []
+              dnsmasq: []
+              gcc: []
+              iotop: []
+              jq: []
+              nmap: []
+              python-pip: []
+            python:
+              awscli: []
+              boto: []
+              boto3: []
+          files:
+            /etc/profile.d/vimode.sh:
+              content: |
+                if [[ -n "$BASH_VERSION" ]]; then
+                  set -o vi
+                elif [[ -n "$ZSH_VERSION" ]]; then
+                  bindkey -v
+                fi
+                alias vi=vim
+              group: "root"
+              mode: "000644"
+              owner: "root"
+            /home/ubuntu/.bash_aliases:
+              content: |
+                source /etc/profile.d/ps1.sh
+                export EDITOR=vim
+                alias lcfn='sudo less -n /var/log/cfn-init.log'
+              group: "ubuntu"
+              mode: "000644"
+              owner: "ubuntu"
+            /root/.bash_aliases:
+              content: |
+                source /etc/profile.d/ps1.sh
+                export EDITOR=vim
+              group: "root"
+              mode: "000644"
+              owner: "root"
+          commands:
+            00securityupdate:
+              command: unattended-upgrades
+              cwd: "/tmp"
+        initialize:
+          packages:
+            apt:
+              libffi-dev: []
+              libssl-dev: []
+              nvme-cli: []
+            python:
+              ansible: []
+          files:
+            /root/.aws/config:
+              content: !Sub |
+                [default]
+                region = ${AWS::Region}
+                output = json
+              group: "root"
+              mode: "000644"
+              owner: "root"
+            /home/ubuntu/.aws/config:
+              content: !Sub |
+                [default]
+                region = ${AWS::Region}
+                output = json
+              group: "ubuntu"
+              mode: "000644"
+              owner: "ubuntu"
+        finalize:
+          files:
+            /home/ubuntu/fetch-ansible:
+              content: !Sub  |
+                #!/usr/bin/env bash
+                set -e
+                branch=master
+                if [[ -n "$1" ]]; then
+                  branch=$1
+                fi
+                if [[ -e ansible ]]; then
+                  rm -rf ansible
+                fi
+                if [[ -e ansible.tgz ]]; then
+                  rm -f ansible.tgz
+                fi
+                aws s3 cp s3://aeraria-${AWS::Region}/ansible.tgz ./ansible.tgz
+                tar xzf ansible.tgz
+                chown -R ubuntu:ubuntu ansible
+                cd ansible
+                ansible-galaxy install -r requirements.yml
+            /root/mount_swap_file:
+              content: !Sub |
+                #!/usr/bin/env bash
+                swapfile=/data/swapfile
+                if grep -vq "$swapfile" /etc/fstab; then
+                  echo "$swapfile swap swap defaults 0 0" >> /etc/fstab
+                fi
+                if [[ ! -e $swapfile ]]; then
+                  dd if=/dev/zero of=$swapfile bs=1024 count=524288
+                fi
+                chmod 0600 $swapfile
+                mkswap $swapfile
+                swapon $swapfile
+              group: "root"
+              mode: "000755"
+              owner: "root"
+            /root/.aws/config:
+              content: !Sub |
+                [default]
+                region = ${AWS::Region}
+                output = json
+              group: "root"
+              mode: "000644"
+              owner: "root"
+            /root/mount_data_volume:
+              content: !Sub
+              - |
+                #!/usr/bin/env bash
+                export METADATA="http://169.254.169.254/latest/meta-data"
+                if [[ ! -e /dev/${DeviceId} ]]; then
+                  aws --region ${AWS::Region} ec2 detach-volume --volume-id ${Volume} && sleep 30 || true
+                  aws --region ${AWS::Region} ec2 attach-volume --device xvd${VolumeDriveLetter} --instance-id `curl -s $METADATA/instance-id` --volume-id ${Volume}
+                  sleep 30
+                fi
+                if grep -vq '/data' /etc/fstab; then
+                  echo "LABEL=data /data ext4 defaults,nofail 0 0" >> /etc/fstab
+                fi
+                if ! tune2fs -l /dev/${DeviceId}; then
+                  mkfs.ext4 /dev/${DeviceId}
+                  e2label /dev/${DeviceId} data
+                fi
+                if [[ ! -e /data ]]; then
+                  mkdir /data
+                fi
+                mount /data
+                chmod go+rwx /data
+              - DeviceId:  !If
+                - NVMEInstance
+                - !FindInMap [DeviceVolumeMap, nvme, '1']
+                - !FindInMap [DeviceVolumeMap, xvd, !Ref VolumeDriveLetter1]
+                VolumeDriveLetter: f
+              group: "root"
+              mode: "000755"
+              owner: "root"
+          commands:
+            00mlocatedb:
+              command: updatedb
+              cwd: "/tmp"
+            20datavolume:
+              command: /root/mount_data_volume
+              cwd: "/tmp"
+            21swapfile:
+              command: /root/mount_swap_file
+              cwd: "/tmp"
+        AWS::CloudFormation::Authentication:
+          AwsAccessCreds:
+            buckets:
+            - !Sub mw-infrastructure-${AWS::Region}
+            roleName: !Ref Role
+            type: S3
+    Properties:
+      AssociatePublicIpAddress: yes
+      BlockDeviceMappings:
+      - DeviceName: /dev/sda1
+        Ebs:
+          DeleteOnTermination: true
+          VolumeSize: 30
+          VolumeType: gp2
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId: !FindInMap [AMIMap, !Ref 'AWS::Region', ami]
+      InstanceType: !Ref InstanceType
+      KeyName: !Sub aeraria-${AWS::Region}
+      SecurityGroups:
+        - sg-313fd940
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -vex
+          apt-get update -q
+          apt-get install -qy python-setuptools
+          easy_install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+          umask 0022
+          echo 'Running cfn-init'
+          /usr/local/bin/cfn-init --verbose -s ${AWS::StackName} -r LaunchConfiguration --region=${AWS::Region} --role=${Role} || true
+          /usr/local/bin/cfn-signal --region ${AWS::Region} --resource AutoScalingGroup --stack ${AWS::StackName}
+          echo Done.
+  Volume:
+    Type: "AWS::EC2::Volume"
+    DeletionPolicy: Snapshot
+    Properties:
+      AvailabilityZone: us-west-2c
+      Encrypted: True
+      Size: 50
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+        Key: Name
+        Value: !Sub ${Name}
+      VolumeType: gp2
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+      - us-west-2c
+      DesiredCapacity: !Ref Size
+      HealthCheckGracePeriod: 600
+      HealthCheckType: EC2
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MaxSize: !Ref Size
+      MinSize: !Ref Size
+      Tags:
+      - Key: Name
+        PropagateAtLaunch: true
+        Value: !Sub ${Name}-${Environment}-${AWS::Region}
+      - Key: Environment
+        PropagateAtLaunch: true
+        Value: !Sub ${Environment}
+      VPCZoneIdentifier: 
+      - subnet-4b036b11
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT60M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        PauseTime: PT60M
+        WaitOnResourceSignals: true
+Outputs:
+  Role:
+    Export:
+      Name: !Sub ${Environment}:${Name}:role
+    Value: !Ref Role
+  InstanceProfile:
+    Export:
+      Name: !Sub ${Environment}:${Name}:instanceprofile
+    Value: !Ref InstanceProfile
+...

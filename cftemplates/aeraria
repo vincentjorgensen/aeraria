@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+
+function usage {
+  echo "$0 [-n name] [-e environment] [-c|-u|-d] [-r region] [-p <paramkey>=<paramvalue>]"
+}
+
+success_cmd=100
+all_args=$*
+name=${0##*/}
+region=us-west-2
+template=$name.yaml
+environment=`yq '.Parameters.Environment.Default' $template | sed -e 's/"//g'`
+mode=create-stack
+monitor=false
+stackname=''
+
+extra_params=''
+
+while getopts ":cdhmn:e:p:r:suy:" opt; do
+  case $opt in
+    c ) mode=create-stack ;;
+    d ) mode=delete-stack ;;
+    h ) mode=create-change-set ;;
+    m ) monitor=true ;;
+    n ) name=$OPTARG ;;
+    e ) environment=$OPTARG ;;
+    p ) extra_params="$extra_params ParameterKey=${OPTARG%=*},ParameterValue=${OPTARG#*=}" ;;
+    r ) region=$OPTARG ;;
+    s ) mode=status ;;
+    u ) mode=update-stack ;;
+    y ) stackname=$OPTARG ;;
+    * ) usage; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [[ -z $stackname ]]; then
+  stackname=$environment-$name
+fi
+
+echo Stack name is $stackname
+echo Mode is $mode
+# Create or update?
+aws --profile $environment --region $region \
+  cloudformation list-stacks |
+    jq '.StackSummaries[] | {name: .StackName,status: .StackStatus} | select(.status!="DELETE_COMPLETE")|[.name][]' |
+      egrep '"\<'$stackname'\>"' > /dev/null 2>&1 && [[ $mode == create-stack ]] && mode=update-stack
+
+if [[ $mode != "delete-stack" ]]; then
+  all_params="--parameters $extra_params"
+  all_params="$all_params ParameterKey=Name,ParameterValue=$name"
+  all_params="$all_params ParameterKey=Environment,ParameterValue=$environment"
+  caps="--capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+  temple="--template-body file://$template"
+fi
+
+if [[ $mode == "create-change-set" ]]; then
+  all_params="$all_params --change-set-name change-set-$name"
+fi
+
+# Show Status and Wait (if specified)
+if [[ $mode == "status" ]]; then
+  keepon=true
+  echo Checking $mode of $stackname
+  while $keepon; do
+    sstatus=`aws --profile $environment --region $region \
+                 cloudformation describe-stacks \
+                 --stack-name $stackname | 
+             jq '.Stacks[0].StackStatus'`
+    echo $sstatus
+    keepon=false
+    if [[ ! "$sstatus" =~ "COMPLETE" && -n $sstatus ]] && $monitor; then
+      keepon=true
+      sleep 10
+    fi
+  done
+else 
+  echo Performing $mode on $stackname
+  aws --profile $environment --region $region \
+    cloudformation $mode \
+    --stack-name $stackname \
+    $temple $caps $all_params #| tee stacks/$stackname.json
+  success_cmd=$?
+  if [[ $mode == "create-change-set" ]]; then
+    aws --profile $environment --region $region \
+      cloudformation describe-change-set \
+      --stack-name $stackname \
+      --change-set-name change-set-$name | jq '.Changes[]'
+  fi
+fi
+
+if [[ $success_cmd -lt 1 ]]; then
+  exec $0 $all_args -sm
+fi
+# End
