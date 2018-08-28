@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+readonly DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+set -e
+
+if [[ -n "$1" ]]; then
+  branch=$1
+fi
+
+aws --profile aeraria s3 cp $DIR/diaspora-setup s3://aeraria-us-west-2/diaspora-setup
+# end
