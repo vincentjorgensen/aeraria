@@ -76,8 +76,25 @@ Parameters:
     Default: aeraria
     Description: Environment Name
     Type: String
+  DBInstanceClass:
+    Default: db.t2.micro
+    Description: DB Instance Class
+    Type: String
+  DBName:
+    Default: postgres
+    Description: DB Name
+    Type: String
+  DBPassword:
+    Default: Z4bbhx61Pheu
+    Description: DB Password
+    NoEcho: true
+    Type: String
+  DBUsername:
+    Default: postgres
+    Description: DB Master Username
+    Type: String
   InstanceType:
-    Default: t2.small
+    Default: t2.micro
     Description: Instance Type
     Type: String
   Name:
@@ -93,6 +110,10 @@ Parameters:
     - diaspora
     Default: diaspora
     Description: Stack type
+    Type: String
+  VolumeDriveLetter:
+    Default: f
+    Description: Volume Drive Letter
     Type: String
 Resources:
   InstanceProfile:
@@ -217,11 +238,46 @@ Resources:
               jq: []
               nmap: []
               python-pip: []
+              # Diaspora https://wiki.diasporafoundation.org/Installation/Ubuntu/Xenial
+              build-essential: []
+              git: []
+              curl: []
+              imagemagick: []
+              libmagickwand-dev: []
+              libssl-dev: []
+              libcurl4-openssl-dev: []
+              libxml2-dev: []
+              libxslt1-dev: []
+              libgmp-dev: []
+              libpq-dev: []
+              nodejs: []
+              postgresql-client: []
+              postgresql-client-common: []
+              redis-server: []
+              # RVM
+              autoconf: []
+              automake: []
+              bison: []
+              libgdbm-dev: []
+              libncurses5-dev: []
+              libsqlite3-dev: []
+              libyaml-dev: [] 
+              sqlite3: []
+              libreadline6-dev: []
+              nginx: []
             python:
               awscli: []
               boto: []
               boto3: []
           files:
+            /etc/aws/postgres:
+              content: !Sub
+              - postgres://${DBUsername}:${DBPassword}@${url}:${port}/${DBName}
+              - url: !GetAtt DBInstance.Endpoint.Address
+                port: !GetAtt DBInstance.Endpoint.Port
+              group: "root"
+              mode: "000644"
+              owner: "root"
             /etc/profile.d/vimode.sh:
               content: |
                 if [[ -n "$BASH_VERSION" ]]; then
@@ -235,7 +291,6 @@ Resources:
               owner: "root"
             /home/ubuntu/.bash_aliases:
               content: |
-                source /etc/profile.d/ps1.sh
                 export EDITOR=vim
                 alias lcfn='sudo less -n /var/log/cfn-init.log'
               group: "ubuntu"
@@ -243,7 +298,6 @@ Resources:
               owner: "ubuntu"
             /root/.bash_aliases:
               content: |
-                source /etc/profile.d/ps1.sh
                 export EDITOR=vim
               group: "root"
               mode: "000644"
@@ -277,27 +331,54 @@ Resources:
               group: "ubuntu"
               mode: "000644"
               owner: "ubuntu"
+          commands:
+            00createuser:
+              command: adduser --disabled-login diaspora
+              test: ! id -u $username
+            00createuser:
+              command: usermod -a -G sudo diaspora
+              test: ! groups diaspora | grep -q sudo
         finalize:
           files:
-            /home/ubuntu/fetch-ansible:
+            /home/diaspora/.pguser:
+              content: !Sub
+              - ${DBPort}
+              - DBPort: !GetAtt DBInstance.Endpoint.Port
+              group: "diaspora"
+              mode: "000644"
+              owner: "diaspora"
+            /home/diaspora/.pgport:
+              content: !Ref DBUsername
+              group: "diaspora"
+              mode: "000644"
+              owner: "diaspora"
+            /home/diaspora/.pghost:
+              content: !Sub
+              - |
+                ${DBHost}
+              - DBHost: !GetAtt DBInstance.Endpoint.Address
+              group: "diaspora"
+              mode: "000644"
+              owner: "diaspora"
+            /home/diaspora/.pgpass:
+              content: !Sub
+              - |
+                # HOST:PORT:DB:USER:PASSWD
+                ${DBHost}:${DBPort}:postgres:${DBUsername}:${DBPassword}
+              - DBHost: !GetAtt DBInstance.Endpoint.Address
+                DBPort: !GetAtt DBInstance.Endpoint.Port
+              group: "diaspora"
+              mode: "000600"
+              owner: "diaspora"
+            /home/diaspora/fetch-script:
               content: !Sub  |
                 #!/usr/bin/env bash
                 set -e
-                branch=master
-                if [[ -n "$1" ]]; then
-                  branch=$1
-                fi
-                if [[ -e ansible ]]; then
-                  rm -rf ansible
-                fi
-                if [[ -e ansible.tgz ]]; then
-                  rm -f ansible.tgz
-                fi
-                aws s3 cp s3://aeraria-${AWS::Region}/ansible.tgz ./ansible.tgz
-                tar xzf ansible.tgz
-                chown -R ubuntu:ubuntu ansible
-                cd ansible
-                ansible-galaxy install -r requirements.yml
+                aws s3 cp s3://aeraria-${AWS::Region}/setup-diaspora ./setup-diaspora
+                chmod 755 ./setup-diaspora
+              group: "diaspora"
+              mode: "000755"
+              owner: "diaspora"
             /root/mount_swap_file:
               content: !Sub |
                 #!/usr/bin/env bash
@@ -347,11 +428,19 @@ Resources:
               - DeviceId:  !If
                 - NVMEInstance
                 - !FindInMap [DeviceVolumeMap, nvme, '1']
-                - !FindInMap [DeviceVolumeMap, xvd, !Ref VolumeDriveLetter1]
-                VolumeDriveLetter: f
+                - !FindInMap [DeviceVolumeMap, xvd, !Ref VolumeDriveLetter]
               group: "root"
               mode: "000755"
               owner: "root"
+#          /root/route-53:
+#            content:
+#              #!/usr/bin/env bash
+#              export METADATA="http://169.254.169.254/latest/meta-data"
+#              sed -ie 's/__PRIVATE_IPADDRESS__/'`cat /etc/privateip`'/;s/__AZ__/'`cat /etc/hostnameid`'/' /etc/change-batch.json
+#              aws route53 change-resource-record-sets --hosted-zone-id ${PrivateHostedZoneId} --change-batch file:///etc/change-batch.json
+#              group: "root"
+#              mode: "000755"
+#              owner: "root"
           commands:
             00mlocatedb:
               command: updatedb
@@ -394,18 +483,116 @@ Resources:
           /usr/local/bin/cfn-init --verbose -s ${AWS::StackName} -r LaunchConfiguration --region=${AWS::Region} --role=${Role} || true
           /usr/local/bin/cfn-signal --region ${AWS::Region} --resource AutoScalingGroup --stack ${AWS::StackName}
           echo Done.
+  InternalSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${Environment}-${Name}-internal
+      GroupDescription: Internal SG
+      VpcId: vpc-18a09661
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Name
+        Value: !Sub ${Name}-int-sg
+  InternalSecurityGroupIngress01:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      FromPort: -1
+      ToPort: -1
+      IpProtocol: -1
+      GroupId: !Ref InternalSecurityGroup
+      SourceSecurityGroupId: !Ref InternalSecurityGroup
+  InternalSecurityGroupIngress99:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      FromPort: 22
+      ToPort: 22
+      IpProtocol: tcp
+      CidrIp: 0.0.0.0/0
+      SourceSecurityGroupId: !Ref InternalSecurityGroup
+  ExternalSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${Environment}-${Name}-external
+      GroupDescription: External SG
+      VpcId: vpc-18a09661
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Name
+        Value: !Sub ${Name}-ext-sg
+  ExternalSecurityGroupIngress99:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      FromPort: 443
+      ToPort: 443
+      IpProtocol: tcp
+      CidrIp: 0.0.0.0/0
+      SourceSecurityGroupId: !Ref ExternalSecurityGroup
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${Name}-${AWS::Region}
+      Scheme: internet-facing
+      SecurityGroups:
+      - !Ref InternalSecurityGroup
+      - !Ref ExternalSecurityGroup
+      Subnets:
+      - subnet-4b036b11
+      - subnet-888838c3
+      - subnet-74e87e0d
+      Tags:
+      - Key: Name
+        Value: !Sub ${Name}
+      - Key: Environment
+        Value: !Ref Environment
+      Type: application
+      IpAddressType: ipv4
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      Certificates:
+      - CertificateArn:	!Sub arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/07543a0e-6b2a-4ba7-a08c-aac2fd68a385
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:  !Ref TargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS-1-2-2017-01
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: '/'
+      HealthCheckPort: 3000
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 5
+      Matcher:
+        HttpCode: '200-499'
+      Port: 3000
+      Protocol: HTTP
+      Tags:
+      - Key: Name
+        Value: !Sub ${Name}
+      - Key: Environment
+        Value: !Ref Environment
+      TargetType: instance
+      VpcId: vpc-18a09661
   Volume:
     Type: "AWS::EC2::Volume"
     DeletionPolicy: Snapshot
     Properties:
       AvailabilityZone: us-west-2c
-      Encrypted: True
+      Encrypted: true
       Size: 50
       Tags:
       - Key: Environment
         Value: !Ref Environment
-        Key: Name
-        Value: !Sub ${Name}
+      - Key: Name
+        Value: !Ref Name
       VolumeType: gp2
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
@@ -418,13 +605,15 @@ Resources:
       LaunchConfigurationName: !Ref LaunchConfiguration
       MaxSize: !Ref Size
       MinSize: !Ref Size
+      TargetGroupARNs:
+      - !Ref TargetGroup
       Tags:
       - Key: Name
         PropagateAtLaunch: true
-        Value: !Sub ${Name}-${Environment}-${AWS::Region}
+        Value: !Ref Name
       - Key: Environment
         PropagateAtLaunch: true
-        Value: !Sub ${Environment}
+        Value: !Ref Environment
       VPCZoneIdentifier: 
       - subnet-4b036b11
     CreationPolicy:
@@ -434,6 +623,46 @@ Resources:
       AutoScalingRollingUpdate:
         PauseTime: PT60M
         WaitOnResourceSignals: true
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: 20
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: true
+      AvailabilityZone: us-west-2c
+      DBInstanceClass: !Ref DBInstanceClass
+      DBName: !Ref DBName
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      Engine: postgres
+      EngineVersion: 10.4
+      LicenseModel: postgresql-license
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      MultiAZ: false
+      Port: 5432
+      PubliclyAccessible: false
+      StorageType: gp2
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+        Key: Name
+        Value: !Ref Name
+      VPCSecurityGroups:
+        - sg-313fd940
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: 
+      DBSubnetGroupDescription: !Sub ${Name} DB Subnet Group
+      DBSubnetGroupName: !Ref Name
+      SubnetIds:
+      - subnet-4b036b11
+      - subnet-888838c3
+      - subnet-74e87e0d
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+        Key: Name
+        Value: !Ref Name
 Outputs:
   Role:
     Export:
@@ -443,4 +672,31 @@ Outputs:
     Export:
       Name: !Sub ${Environment}:${Name}:instanceprofile
     Value: !Ref InstanceProfile
+  DBInstance:
+    Export:
+      Name: !Sub ${Environment}:${Name}:db:url
+    Value: !GetAtt DBInstance.Endpoint.Address
+  DBInstanceURI:
+    Export:
+      Name: !Sub ${Environment}:${Name}:db:uri
+    Value: !Sub
+    - postgres://${DBUsername}:${DBPassword}@${url}:${port}/${DBName}
+    - url: !GetAtt DBInstance.Endpoint.Address
+      port: !GetAtt DBInstance.Endpoint.Port
+  DBSubnetGroup:
+    Export:
+      Name: !Sub ${Environment}:${Name}:db:subnetgroup
+    Value: !Ref DBSubnetGroup
+  Volume:
+    Export:
+      Name: !Sub ${Environment}:${Name}:volume:id
+    Value: !Ref Volume
+  LoadBalancer:
+    Export:
+      Name: !Sub ${Environment}:${Name}:elb
+    Value: !GetAtt LoadBalancer.DNSName
+  LoadBalancerArn:
+    Export:
+      Name: !Sub ${Environment}:${Name}:elb:arn
+    Value: !Ref LoadBalancer
 ...
