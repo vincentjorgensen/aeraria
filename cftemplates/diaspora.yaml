@@ -77,6 +77,7 @@ Parameters:
     Description: Environment Name
     Type: String
   DBInstanceClass:
+    AllowedPattern: db\..*\..*
     Default: db.t2.micro
     Description: DB Instance Class
     Type: String
@@ -93,6 +94,19 @@ Parameters:
     Default: postgres
     Description: DB Master Username
     Type: String
+  DomainName:
+    AllowedPattern: .*\..[a-z]
+    Default: nausi.ca
+    Description: DNS Domain Name
+    Type: String
+  ExternalPort:
+    Default: 443
+    Description: External Port
+    Type: Number
+  InternalPort:
+    Default: 3000
+    Description: Internal Port
+    Type: Number
   InstanceType:
     Default: t2.micro
     Description: Instance Type
@@ -112,8 +126,14 @@ Parameters:
     Description: Stack type
     Type: String
   VolumeDriveLetter:
+    AllowedPattern: [a-z]
     Default: f
     Description: Volume Drive Letter
+    Type: String
+  ZoneId:
+    AllowedPattern: ^Z[A-Z0-9]*
+    Default: Z3ORNDSDJACF21
+    Description: Zone ID (e.g. Z...)
     Type: String
 Resources:
   InstanceProfile:
@@ -432,15 +452,34 @@ Resources:
               group: "root"
               mode: "000755"
               owner: "root"
-#          /root/route-53:
-#            content:
-#              #!/usr/bin/env bash
-#              export METADATA="http://169.254.169.254/latest/meta-data"
-#              sed -ie 's/__PRIVATE_IPADDRESS__/'`cat /etc/privateip`'/;s/__AZ__/'`cat /etc/hostnameid`'/' /etc/change-batch.json
-#              aws route53 change-resource-record-sets --hosted-zone-id ${PrivateHostedZoneId} --change-batch file:///etc/change-batch.json
-#              group: "root"
-#              mode: "000755"
-#              owner: "root"
+          /root/route-53:
+            content:
+              #!/usr/bin/env bash
+              export METADATA="http://169.254.169.254/latest/meta-data"
+              sed -ie 's/__IPADDRESS__/'`curl -fsSL $METADATA/public-ipv4`'/' /root/change-batch.json
+              aws route53 change-resource-record-sets --hosted-zone-id ${ZoneId} --change-batch file:///root/change-batch.json
+              group: "root"
+              mode: "000755"
+              owner: "root"
+          /root/change-batch.json:
+              content: !Sub |
+                {
+                  "Comment": "${Environment} ${Name} RRS",
+                  "Changes": [
+                    {
+                      "Action": "UPSERT",
+                      "ResourceRecordSet": {
+                        "Name": "${Name}.${DomainName}.",
+                        "Type": "A",
+                        "TTL": 300,
+                        "ResourceRecords": [
+                          {
+                            "Value": "__IPADDRESS__"
+                          } ] } } ] }
+            content:
+              group: "root"
+              mode: "000644"
+              owner: "root"
           commands:
             00mlocatedb:
               command: updatedb
@@ -508,7 +547,7 @@ Resources:
       FromPort: 22
       ToPort: 22
       IpProtocol: tcp
-      CidrIp: 0.0.0.0/0
+      CidrIp: 24.4.216.39/32
       SourceSecurityGroupId: !Ref InternalSecurityGroup
   ExternalSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -524,11 +563,21 @@ Resources:
   ExternalSecurityGroupIngress99:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
-      FromPort: 443
-      ToPort: 443
+      FromPort: !Ref ExternalPort
+      ToPort: !Ref ExternalPort
       IpProtocol: tcp
       CidrIp: 0.0.0.0/0
       SourceSecurityGroupId: !Ref ExternalSecurityGroup
+  RecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Comment: !Sub "${Name} ${Deployment} ${Environment} ${AWS::Region}"
+      HostedZoneId: !Ref ZoneId
+      Name: !Ref DomainName
+      ResourceRecords:
+      - !GetAtt LoadBalancer.DNSName
+      TTL: '300'
+      Type: CNAME
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
@@ -557,7 +606,7 @@ Resources:
       - Type: forward
         TargetGroupArn:  !Ref TargetGroup
       LoadBalancerArn: !Ref LoadBalancer
-      Port: 443
+      Port: !Ref ExternalPort
       Protocol: HTTPS
       SslPolicy: ELBSecurityPolicy-TLS-1-2-2017-01
   TargetGroup:
@@ -565,14 +614,14 @@ Resources:
     Properties:
       HealthCheckIntervalSeconds: 10
       HealthCheckPath: '/'
-      HealthCheckPort: 3000
+      HealthCheckPort: !Ref InternalPort
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 3
       UnhealthyThresholdCount: 5
       Matcher:
         HttpCode: '200-499'
-      Port: 3000
+      Port: !Ref InternalPort
       Protocol: HTTP
       Tags:
       - Key: Name
