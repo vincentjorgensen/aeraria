@@ -11,14 +11,15 @@ if [[ ! -e $HOME/.pgdpassword ]]; then
 fi
 pgpassword=`cat $HOME/.pgdpassword`
 
-psql postgres://`cat .pguser`@`cat .pghost`:`cat .pgport`/postgres <<EOF
+psql postgres://`cat $HOME/.pguser`@`cat $HOME/.pghost`:`cat $HOME/.pgport`/postgres <<EOF
 CREATE USER diaspora WITH CREATEDB PASSWORD '$pgpassword';
 EOF
 
+command curl -sSL https://rvm.io/mpapis.asc | gpg2 --import
 curl -L https://s.diaspora.software/1t | bash
 
 if grep -qv '$HOME/.rvm/scripts/rvm' .bashrc; then
-  cat >> .bashrc <<'EOF'
+  cat >> $HOME/.bashrc <<'EOF'
 [[ -s "$HOME/.rvm/scripts/rvm" ]] && source "$HOME/.rvm/scripts/rvm" 
 EOF
   source $HOME/.bashrc
@@ -35,20 +36,17 @@ pushd diaspora
 
 if [[ ! -e config/database.yml ]]; then
   cp config/database.yml.example config/database.yml
+  sed -ie 's/host: localhost/host: `cat $HOME/.pghost`/' config/database.yml
+  sed -ie 's/username: postgres/username: diaspora/' config/database.yml
+  sed -ie 's/password:$/password: `cat $HOME/.pgdpassword`/' config/database.yml
 fi
 if [[ ! -e config/diaspora.yml ]]; then
   cp config/diaspora.yml.example config/diaspora.yml
+  sed -ie 's/#url: "https:\/\/example.org\/"/url: "https:\/\/`cat $HOME/.podname`/' config/diaspora.yml
+  sed -ie 's/#\(certificate_authorities: '"'"'\/etc\/ssl\/certs\/ca-certificates.crt'"'"'\)/\1/' config/diaspora.yml
+  sed -ie 's/#\(rails_environment:\).*/\1 '"'"production"'"'/' config/diaspora.yml
+  sed -ie 's/#\(require_ssl: true\)/\1/' config/diaspora.yml
 fi
-
-# Edit config/database.yml
-#username Make sure to use the right username you created for diaspora.
-#password Make sure to use the right password for the user your created for diaspora.
-#host
-# Edit config/diaspora.yml
-#environment.url: Set the public facing URL to your pod here, for example for https://pod.geraspora.de this would be https://pod.geraspora.de
-#environment.certificate_authorities: You have to set this, one of the examples should fit. If the file in the example doesn't exist you're missing a package, in most cases it's named ca-certificates.
-#server.rails_environment: You must set this to production. The server section is read by ./script/server and most alternative startup methods to setup the correct environment.
-#environment.require_ssl: If for some reason you can't run your pod on HTTPS (we highly encourage you to do it!), set this to false to prevent a redirect from http:// to https://
 
 gem install bundler
 script/configure_bundler
