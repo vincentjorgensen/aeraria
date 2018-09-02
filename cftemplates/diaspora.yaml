@@ -1,4 +1,4 @@
---
+---
 AWSTemplateFormatVersion: '2010-09-09'
 Description: Aeraria Diaspora
 Conditions:
@@ -110,7 +110,7 @@ Parameters:
     Description: Stack type
     Type: String
   VolumeDriveLetter:
-    AllowedPattern: [a-z]
+    AllowedPattern: '[a-z]'
     Default: f
     Description: Volume Drive Letter
     Type: String
@@ -269,12 +269,19 @@ Resources:
               libyaml-dev: [] 
               sqlite3: []
               libreadline6-dev: []
-              nginx: []
-            python:
-              awscli: []
-              boto: []
-              boto3: []
+              # hey
+              libffi-dev: []
+              libssl-dev: []
+              nvme-cli: []
           files:
+            /etc/aws/redis:
+              content: !Sub
+              - redis://{url}:${port}
+              - url: !GetAtt RedisCache.RedisEndpoint.Address
+                port: !GetAtt RedisCache.RedisEndpoint.Port
+              group: "root"
+              mode: "000644"
+              owner: "root"
             /etc/aws/postgres:
               content: !Sub
               - postgres://${DBUsername}:${DBPassword}@${url}:${port}/${DBName}
@@ -311,14 +318,9 @@ Resources:
             00securityupdate:
               command: unattended-upgrades
               cwd: "/tmp"
+            10pythonpip:
+              command: pip install awscli ansible boto boto3
         initialize:
-          packages:
-            apt:
-              libffi-dev: []
-              libssl-dev: []
-              nvme-cli: []
-            python:
-              ansible: []
           files:
             /root/.aws/config:
               content: !Sub |
@@ -340,32 +342,45 @@ Resources:
             00createuser:
               command: adduser --disabled-login diaspora
               test: ! id -u $username
-            00createuser:
+            01createuser:
               command: usermod -a -G sudo diaspora
               test: ! groups diaspora | grep -q sudo
         finalize:
           files:
+            /home/diaspora/.redishost:
+              content: !Sub
+              - ${RedisHost}
+              - RedisHost: !GetAtt RedisCache.RedisEndpoint.Address
+              group: "diaspora"
+              mode: "000644"
+              owner: "diaspora"
+            /home/diaspora/.redisport:
+              content: !Sub
+              - ${RedisPort}
+              - RedisPort: !GetAtt RedisCache.RedisEndpoint.Port
+              group: "diaspora"
+              mode: "000644"
+              owner: "diaspora"
             /home/diaspora/.podname:
               content: !Sub pod.${DomainName}
               group: "diaspora"
               mode: "000644"
               owner: "diaspora"
-            /home/diaspora/.pguser:
+            /home/diaspora/.pgport:
               content: !Sub
               - ${DBPort}
               - DBPort: !GetAtt DBInstance.Endpoint.Port
               group: "diaspora"
               mode: "000644"
               owner: "diaspora"
-            /home/diaspora/.pgport:
+            /home/diaspora/.pguser:
               content: !Ref DBUsername
               group: "diaspora"
               mode: "000644"
               owner: "diaspora"
             /home/diaspora/.pghost:
               content: !Sub
-              - |
-                ${DBHost}
+              - ${DBHost}
               - DBHost: !GetAtt DBInstance.Endpoint.Address
               group: "diaspora"
               mode: "000644"
@@ -442,31 +457,30 @@ Resources:
               group: "root"
               mode: "000755"
               owner: "root"
-          /root/route-53:
-            content:
-              #!/usr/bin/env bash
-              export METADATA="http://169.254.169.254/latest/meta-data"
-              sed -ie 's/__IPADDRESS__/'`curl -fsSL $METADATA/public-ipv4`'/' /root/change-batch.json
-              aws route53 change-resource-record-sets --hosted-zone-id ${ZoneId} --change-batch file:///root/change-batch.json
+            /root/route-53:
+              content: |
+                #!/usr/bin/env bash
+                export METADATA="http://169.254.169.254/latest/meta-data"
+                sed -ie 's/__IPADDRESS__/'`curl -fsSL $METADATA/public-ipv4`'/' /root/change-batch.json
+                aws route53 change-resource-record-sets --hosted-zone-id ${ZoneId} --change-batch file:///root/change-batch.json
               group: "root"
               mode: "000755"
               owner: "root"
-          /root/change-batch.json:
+            /root/change-batch.json:
               content: !Sub |
                 {
-                  "Comment": "${Environment} ${Name} RRS",
-                  "Changes": [
-                    {
-                      "Action": "UPSERT",
-                      "ResourceRecordSet": {
-                        "Name": "${Name}.${DomainName}.",
-                        "Type": "A",
-                        "TTL": 300,
-                        "ResourceRecords": [
-                          {
-                            "Value": "__IPADDRESS__"
-                          } ] } } ] }
-            content:
+                "Comment": "${Environment} ${Name} RRS",
+                "Changes": [
+                  {
+                    "Action": "UPSERT",
+                    "ResourceRecordSet": {
+                      "Name": "${Name}.${DomainName}.",
+                      "Type": "A",
+                      "TTL": 300,
+                      "ResourceRecords": [
+                        {
+                          "Value": "__IPADDRESS__"
+                        } ] } } ] }
               group: "root"
               mode: "000644"
               owner: "root"
@@ -505,8 +519,8 @@ Resources:
           #!/bin/bash
           set -vex
           apt-get update -q
-          apt-get install -qy python-setuptools
-          easy_install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+          apt-get install -qqy python-setuptools python-pip
+          pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
           umask 0022
           echo 'Running cfn-init'
           /usr/local/bin/cfn-init --verbose -s ${AWS::StackName} -r LaunchConfiguration --region=${AWS::Region} --role=${Role} || true
@@ -531,6 +545,7 @@ Resources:
       IpProtocol: -1
       GroupId: !Ref InternalSecurityGroup
       SourceSecurityGroupId: !Ref InternalSecurityGroup
+      Description: All local traffic
   InternalSecurityGroupIngress99:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
@@ -538,7 +553,8 @@ Resources:
       ToPort: 22
       IpProtocol: tcp
       CidrIp: 24.4.216.39/32
-      SourceSecurityGroupId: !Ref InternalSecurityGroup
+      GroupId: !Ref InternalSecurityGroup
+      Description: Home IP
   ExternalSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -557,11 +573,12 @@ Resources:
       ToPort: !Ref ExternalPort
       IpProtocol: tcp
       CidrIp: 0.0.0.0/0
-      SourceSecurityGroupId: !Ref ExternalSecurityGroup
+      GroupId: !Ref ExternalSecurityGroup
+      Description: World Wide Web
   RecordSet:
     Type: AWS::Route53::RecordSet
     Properties:
-      Comment: !Sub "${Name} ${Deployment} ${Environment} ${AWS::Region}"
+      Comment: !Sub "${Name} ${Environment} ${AWS::Region}"
       HostedZoneId: !Ref ZoneId
       Name: !Sub pod.${DomainName}
       ResourceRecords:
@@ -591,7 +608,7 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
       Certificates:
-      - CertificateArn:	!Sub arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/07543a0e-6b2a-4ba7-a08c-aac2fd68a385
+      - CertificateArn: !Sub arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/07543a0e-6b2a-4ba7-a08c-aac2fd68a385
       DefaultActions:
       - Type: forward
         TargetGroupArn:  !Ref TargetGroup
@@ -702,6 +719,32 @@ Resources:
         Value: !Ref Environment
         Key: Name
         Value: !Ref Name
+  ECSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: !Sub ${Name} ${Environment} Cache Subnet Group
+      SubnetIds:
+      - subnet-4b036b11
+      - subnet-888838c3
+      - subnet-74e87e0d
+  RedisCache:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      AutoMinorVersionUpgrade: true
+      CacheNodeType: cache.t2.micro
+      CacheSubnetGroupName: !Ref ECSubnetGroup
+      ClusterName: String
+      Engine: redis
+      EngineVersion: 4.0.10
+      NumCacheNodes: 1
+      PreferredAvailabilityZone: us-west-2c
+      Tags:
+      - Key: Environment
+        Value: !Ref Environment
+        Key: Name
+        Value: !Ref Name
+      VpcSecurityGroupIds:
+        - sg-313fd940
 Outputs:
   Role:
     Export:
@@ -738,4 +781,12 @@ Outputs:
     Export:
       Name: !Sub ${Environment}:${Name}:elb:arn
     Value: !Ref LoadBalancer
+  RedisCache:
+    Export:
+      Name: !Sub ${Environment}:${Name}:redis:url
+    Value: !GetAtt RedisCache.RedisEndpoint.Address
+  RedisCachePort:
+    Export:
+      Name: !Sub ${Environment}:${Name}:redis:port
+    Value: !GetAtt RedisCache.RedisEndpoint.Port
 ...

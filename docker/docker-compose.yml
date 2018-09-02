@@ -1,0 +1,28 @@
+version: '3.1'
+services:
+  postgres:
+    image: postgres:9.6
+    ports:
+    - 5432:5432
+    environment:
+      POSTGRES_PASSWORD: POOycKA74KuN
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+    - ./postgresql/data/pgdata:/var/lib/postgresql/data/pgdata
+  redis:
+    image: redis:alpine
+    ports:
+    - 6379:6379
+  diaspora:
+    build:
+      context: .
+    image: diaspora:latest
+    ports:
+    - 3000:3000
+    links:
+    - postgres
+    - redis
+    environment:
+      PORT: 3000
+    volumes:
+    - ./diaspora/log:/home/diaspora/diaspora/log 

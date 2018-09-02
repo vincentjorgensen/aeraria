@@ -2,21 +2,33 @@
 declare username
 declare pgpassword
 
+export METADATA="http://169.254.169.254/latest/meta-data"
+
 function passn {
     < /dev/urandom tr -dc _A-Z-a-z-0-9 | head -c${1:-$1};echo;
 }
 
+az=`curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone`
+region=`echo $az|sed -e 's/\(.*\)[a-z]$/\1/'`
 if [[ ! -e $HOME/.pgdpassword ]]; then
-  passn 12 > $HOME/.pgdpassword
+  aws s3 cp s3://aeraria-$region/pgdpassword - > $HOME/.pgdpassword
 fi
-pgpassword=`cat $HOME/.pgdpassword`
 
-psql postgres://`cat $HOME/.pguser`@`cat $HOME/.pghost`:`cat $HOME/.pgport`/postgres <<EOF
+if [[ ! -s $HOME/.pgdpassword ]]; then
+  passn 12 > $HOME/.pgdpassword
+  aws s3 cp $HOME/.pgdpassword s3://aeraria-$region/pgdpassword
+ 
+  pgpassword=`cat $HOME/.pgdpassword`
+
+  psql postgres://`cat $HOME/.pguser`@`cat $HOME/.pghost`:`cat $HOME/.pgport`/postgres <<EOF
 CREATE USER diaspora WITH CREATEDB PASSWORD '$pgpassword';
 EOF
+fi
+
+pgpassword=`cat $HOME/.pgdpassword`
 
 command curl -sSL https://rvm.io/mpapis.asc | gpg2 --import
-curl -L https://s.diaspora.software/1t | bash
+curl -sSL https://s.diaspora.software/1t | bash
 
 if grep -qv '$HOME/.rvm/scripts/rvm' .bashrc; then
   cat >> $HOME/.bashrc <<'EOF'
@@ -25,20 +37,25 @@ EOF
   source $HOME/.bashrc
 fi
 
+source "$HOME/.rvm/scripts/rvm"
+
 # Uncomment if your current user doesn't have the sudo privileges
 # rvm autolibs read-fail
 
 rvm install 2.4
 
+
 # Get Diaspora source
-git clone -b master https://github.com/diaspora/diaspora.git
+git clone -b master https://github.com/diaspora/diaspora.git -C /data
+ln -s /data/diaspora
 pushd diaspora
 
 if [[ ! -e config/database.yml ]]; then
   cp config/database.yml.example config/database.yml
-  sed -ie 's/host: localhost/host: `cat $HOME/.pghost`/' config/database.yml
+  sed -ie 's/host: localhost/host: '`cat $HOME/.pghost`'/' config/database.yml
   sed -ie 's/username: postgres/username: diaspora/' config/database.yml
-  sed -ie 's/password:$/password: `cat $HOME/.pgdpassword`/' config/database.yml
+  sed -ie 's/password:$/password: '`cat $HOME/.pgdpassword`'/' config/database.yml
+  sed -ie 's/#redis: '"'"'redis:\/\/example_host'"'".*'/redis: '"'"'redis:\/\/'`cat $HOME/.redishost`':'`cat $HOME/.redisport`"'"'/' config/diaspora.yml
 fi
 if [[ ! -e config/diaspora.yml ]]; then
   cp config/diaspora.yml.example config/diaspora.yml
