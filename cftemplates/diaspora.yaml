@@ -241,7 +241,6 @@ Resources:
               iotop: []
               jq: []
               nmap: []
-              python-pip: []
               # Diaspora https://wiki.diasporafoundation.org/Installation/Ubuntu/Xenial
               build-essential: []
               git: []
@@ -404,19 +403,30 @@ Resources:
               group: "diaspora"
               mode: "000755"
               owner: "diaspora"
+            /root/setup-chrony:
+              content: |
+                #!/usr/bin/env bash
+                sed -ie 's/2.debian.pool.ntp.org/169.254.169.123/' /etc/chrony/chrony.conf
+                systemctl restart chrony.service
+                exit 0
+              group: "root"
+              mode: "000755"
+              owner: "root"
             /root/mount_swap_file:
               content: !Sub |
                 #!/usr/bin/env bash
-                swapfile=/data/swapfile
+                swapfile=/var/swap/swapfile01_1G
+                mkdir -p /var/swap || true
                 if grep -vq "$swapfile" /etc/fstab; then
                   echo "$swapfile swap swap defaults 0 0" >> /etc/fstab
                 fi
                 if [[ ! -e $swapfile ]]; then
-                  dd if=/dev/zero of=$swapfile bs=1024 count=524288
+                  dd if=/dev/zero of=$swapfile bs=1024 count=1048576
                 fi
                 chmod 0600 $swapfile
                 mkswap $swapfile
                 swapon $swapfile
+                exit 0
               group: "root"
               mode: "000755"
               owner: "root"
@@ -493,6 +503,9 @@ Resources:
               cwd: "/tmp"
             21swapfile:
               command: /root/mount_swap_file
+              cwd: "/tmp"
+            22chrony:
+              command: /root/setup-chrony
               cwd: "/tmp"
         AWS::CloudFormation::Authentication:
           AwsAccessCreds:
