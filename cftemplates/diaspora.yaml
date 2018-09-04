@@ -83,13 +83,25 @@ Parameters:
     Default: nausi.ca
     Description: DNS Domain Name
     Type: String
+  ExternalPort80:
+    Default: 80
+    Description: External Port 80
+    Type: Number
   ExternalPort:
     Default: 443
     Description: External Port
     Type: Number
+  InternalHCPort:
+    Default: 8888
+    Description: Internal Healthcheck Port
+    Type: Number
   InternalPort:
-    Default: 3000
+    Default: 8443
     Description: Internal Port
+    Type: Number
+  InternalPort80:
+    Default: 8080
+    Description: Internal Port 80
     Type: Number
   InstanceType:
     Default: t2.micro
@@ -235,7 +247,6 @@ Resources:
           packages:
             apt:
               bc: []
-              chrony: []
               dnsmasq: []
               gcc: []
               iotop: []
@@ -272,6 +283,8 @@ Resources:
               libffi-dev: []
               libssl-dev: []
               nvme-cli: []
+              # nginx
+              nginx: []
           files:
             /etc/aws/redis:
               content: !Sub
@@ -360,6 +373,11 @@ Resources:
               group: "diaspora"
               mode: "000644"
               owner: "diaspora"
+            /root/.podname:
+              content: !Sub pod.${DomainName}
+              group: "root"
+              mode: "000644"
+              owner: "root"
             /home/diaspora/.podname:
               content: !Sub pod.${DomainName}
               group: "diaspora"
@@ -403,10 +421,24 @@ Resources:
               group: "diaspora"
               mode: "000755"
               owner: "diaspora"
+            /root/chrony.conf.new:
+              content: |
+                pool ntp.ubuntu.com        iburst maxsources 4
+                keyfile /etc/chrony/chrony.keys
+                driftfile /var/lib/chrony/chrony.drift
+                logdir /var/log/chrony
+                maxupdateskew 100.0
+                rtcsync
+                 makestep 1 3
+              group: "root"
+              mode: "000644"
+              owner: "root"
             /root/setup-chrony:
               content: |
                 #!/usr/bin/env bash
-                sed -ie 's/2.debian.pool.ntp.org/169.254.169.123/' /etc/chrony/chrony.conf
+                apt-get install -qqy chrony
+                cp /etc/chrony/chrony.conf /etc/chrony/chrony.conf.orig
+                cp /root/chrony.conf.new /etc/chrony/chrony.conf
                 systemctl restart chrony.service
                 exit 0
               group: "root"
@@ -468,11 +500,26 @@ Resources:
               mode: "000755"
               owner: "root"
             /root/route-53:
-              content: |
+              content: !Sub |
                 #!/usr/bin/env bash
                 export METADATA="http://169.254.169.254/latest/meta-data"
                 sed -ie 's/__IPADDRESS__/'`curl -fsSL $METADATA/public-ipv4`'/' /root/change-batch.json
                 aws route53 change-resource-record-sets --hosted-zone-id ${ZoneId} --change-batch file:///root/change-batch.json
+              group: "root"
+              mode: "000755"
+              owner: "root"
+            /root/setup-nginx:
+              content: |
+                #!/usr/bin/env bash
+                touch /var/www/html/index.html
+                aws s3 cp s3://aeraria-us-west-2/nginx-diaspora.conf.template - |
+                  sed -e 's/__FQDN__/'`cat $HOME/.podname`'/g' \
+                  > /etc/nginx/sites-available/nginx-diaspora.conf
+                [[ -e /etc/nginx/sites-enabled/default ]] && rm /etc/nginx/sites-enabled/default
+                [[ ! -e /etc/nginx/sites-enabled/nginx-diaspora.conf ]] && \
+                ln -s /etc/nginx/sites-available/nginx-diaspora.conf /etc/nginx/sites-enabled/nginx-diaspora.conf
+                systemctl restart nginx.service
+                exit 0
               group: "root"
               mode: "000755"
               owner: "root"
@@ -507,6 +554,12 @@ Resources:
             22chrony:
               command: /root/setup-chrony
               cwd: "/tmp"
+            23route53:
+              command: /root/route-53
+              cwd: "/tmp"
+            24nginx:
+              command: /root/setup-nginx
+              cwd: "/tmp"
         AWS::CloudFormation::Authentication:
           AwsAccessCreds:
             buckets:
@@ -527,6 +580,7 @@ Resources:
       KeyName: !Sub aeraria-${AWS::Region}
       SecurityGroups:
         - sg-313fd940
+        - !Ref InternalSecurityGroup
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
@@ -536,7 +590,7 @@ Resources:
           pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
           umask 0022
           echo 'Running cfn-init'
-          /usr/local/bin/cfn-init --verbose -s ${AWS::StackName} -r LaunchConfiguration --region=${AWS::Region} --role=${Role} || true
+          /usr/local/bin/cfn-init --verbose -s ${AWS::StackName} -r LaunchConfiguration --region ${AWS::Region} --role ${Role} || true
           /usr/local/bin/cfn-signal --region ${AWS::Region} --resource AutoScalingGroup --stack ${AWS::StackName}
           echo Done.
   InternalSecurityGroup:
@@ -629,12 +683,21 @@ Resources:
       Port: !Ref ExternalPort
       Protocol: HTTPS
       SslPolicy: ELBSecurityPolicy-TLS-1-2-2017-01
+  Listener80:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:  !Ref TargetGroup80
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref ExternalPort80
+      Protocol: HTTP
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       HealthCheckIntervalSeconds: 10
       HealthCheckPath: '/'
-      HealthCheckPort: !Ref InternalPort
+      HealthCheckPort: !Ref InternalHCPort
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 3
@@ -642,6 +705,27 @@ Resources:
       Matcher:
         HttpCode: '200-499'
       Port: !Ref InternalPort
+      Protocol: HTTP
+      Tags:
+      - Key: Name
+        Value: !Sub ${Name}
+      - Key: Environment
+        Value: !Ref Environment
+      TargetType: instance
+      VpcId: vpc-18a09661
+  TargetGroup80:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: '/'
+      HealthCheckPort: !Ref InternalHCPort
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 5
+      Matcher:
+        HttpCode: '200-499'
+      Port: !Ref InternalPort80
       Protocol: HTTP
       Tags:
       - Key: Name
@@ -676,6 +760,7 @@ Resources:
       MinSize: !Ref Size
       TargetGroupARNs:
       - !Ref TargetGroup
+      - !Ref TargetGroup80
       Tags:
       - Key: Name
         PropagateAtLaunch: true

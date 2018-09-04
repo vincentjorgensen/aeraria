@@ -7,4 +7,5 @@ if [[ -n "$1" ]]; then
 fi
 
 aws --profile aeraria s3 cp $DIR/setup-diaspora s3://aeraria-us-west-2/setup-diaspora
+aws --profile aeraria s3 cp $DIR/nginx-diaspora.conf.template s3://aeraria-us-west-2/nginx-diaspora.conf.template
 # end
